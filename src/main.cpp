@@ -1,10 +1,13 @@
 #include <iostream>
 #include <time.h>
+#include <string>
 
+#include <opencv2/core/persistence.hpp>
+
+#include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-#include <opencv2/opencv.hpp>
 
 #define ESC 27
 #define NUM_FRAMES 60
@@ -13,9 +16,14 @@
 
 using namespace cv;
 
-void calibrate_camera();
+void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs);
 
-int main() {
+int main(int argc, char **argv) {
+
+        Mat camMatrix, distCoeffs;
+        String fname = (argc == 2) ? argv[1] : "output_calibration.xml";
+        
+        calibrate_camera(fname, camMatrix, distCoeffs);
 
         VideoCapture stream0 = cv::VideoCapture(0);
 
@@ -33,9 +41,11 @@ int main() {
         int slider_scale = 60;
         int slider_thresh = 120;
         int slider_ratio = 20;
+        int slider_hough = 80;
         createTrackbar("Reduce scale", CAMERA_WIN, &slider_scale, 100);
         createTrackbar("Threshold", CAMERA_WIN, &slider_thresh, 255);
         createTrackbar("Ratio", CAMERA_WIN, &slider_ratio, 80);
+        createTrackbar("Hough", CAMERA_WIN, &slider_hough, 200);
 
         time_t start_t, end_t;
         int fps = 30;
@@ -49,6 +59,13 @@ int main() {
                         std::cout << "Failed to read camera frame" << std::endl;
                         return -1;
                 }
+
+                // Estimation of the camera fps
+                // If working with a video file we can use stream.get(CV_CAP_PROP_FPS)
+                if(frame_counter == 0) {
+                        time(&start_t);
+                };
+                frame_counter++;
                 
                 // TODO: Preprocess the camera frame.
                 // 
@@ -60,30 +77,20 @@ int main() {
                 // Process the data from the Aruco
                 // 
                 // Output the detected Aruco into the frame
-                
                 resize(camera_frame, camera_frame_res, Size(),
                         (float)slider_scale / 100, (float)slider_scale / 100);
 
                 cvtColor(camera_frame_res, camera_frame_gray, CV_BGR2GRAY);
 
-                GaussianBlur(camera_frame_gray, camera_frame_gray,
-                        Size(9, 9), 5);
+                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 7, 0);
 
-                // Canny(camera_frame_gray, camera_frame_canny,
-                // slider_thresh, slider_thresh*(slider_ratio/10), 3);
-                threshold(camera_frame_gray, camera_frame_bw,
-                        slider_thresh, 255, THRESH_BINARY);
-
-                Mat img_dilated;
+                output_frame = camera_frame_bw;
+                   
                 int erosion_size = 3;
                 Mat kernel = getStructuringElement(MORPH_RECT,
                         Size( 2*erosion_size + 1, 2*erosion_size+1 ),
                         Point( erosion_size, erosion_size ) );
-        
-                dilate(camera_frame_bw, img_dilated, kernel);
-
-                output_frame = img_dilated;
-
+                
                 Mat img_detected;
                 Mat labels;
                 Mat stats;
@@ -94,14 +101,20 @@ int main() {
                 std::cout << labels.size() << " " << stats.size() << " " << centroids.size() << std::endl;
 
                 RNG rng;
-                
+
+                // Convertimos la imagen a color para poder dibujar
+                cvtColor(output_frame, output_frame, CV_GRAY2BGR);
+
                 for(int i = 1; i < centroids.rows; ++i) {
+                        
+                        int area = stats.at<int>(i, CC_STAT_AREA);
+
+                        // TODO: Mejorar el threshold de figuras detectadas
+                        if (area < 5000 || area > 40000) continue;
 
                         int width = stats.at<int>(i, CC_STAT_WIDTH);
                         int height = stats.at<int>(i, CC_STAT_HEIGHT);
-                        int area = stats.at<int>(i, CC_STAT_AREA);
-
-                        if (area < 1000) continue;
+                        
                         std::cout << "Area: " << area << std::endl;
                         
                         // Center point of the rectangle
@@ -114,26 +127,21 @@ int main() {
                         // Bottom right point
                         Point v_p2(stats.at<int>(i, CC_STAT_LEFT) + width,
                                 stats.at<int>(i, CC_STAT_TOP) + height);
-                
-                        circle(output_frame, c_p, 3, Scalar(0, 0, 255), -1);
+                        
+                        drawMarker(output_frame, c_p, Scalar(0, 255, 0));
+                        // circle(camera_frame_res, c_p, 3, Scalar(0, 0, 255), -1);
                         rectangle(output_frame, v_p1, v_p2, Scalar(0, 255, 0));
                 }
 
-                // Estimation of the camera fps
-                // If working with a video file we can use stream.get(CV_CAP_PROP_FPS)
-                if(frame_counter == 0) {
-                        time(&start_t);
-                };
-                frame_counter++;
+                // Calculate the fps to check if the algorithm works in real time
                 if(frame_counter == NUM_FRAMES) {
                         time(&end_t);
                         fps = NUM_FRAMES / std::difftime(end_t, start_t);
                         frame_counter = 0;
                 };
 
-                cvtColor(output_frame, output_frame, CV_GRAY2BGR);
 
-                putText(output_frame, "FPS: " + std::to_string(fps),
+                putText(camera_frame_res, "FPS: " + std::to_string(fps),
                         cvPoint(15, 40), FONT_HERSHEY_SIMPLEX,
                         1, cvScalar(0, 0, 255), 1, CV_AA);
 
@@ -156,6 +164,16 @@ int main() {
 // Calibrate the camera
 // See https://docs.opencv.org/2.4/doc/tutorials/calib3d/camera_calibration/camera_calibration.html
 // TODO: Use the data from output_calibration to calibrate the camera.
-void calibrate_camera() {
-
+void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
+        FileStorage fs(filename, FileStorage::READ);
+        
+        if(fs.isOpened()) {
+                fs["Camera_Matrix"] >> camMatrix;
+                fs["Distortion_Coefficients"] >> distCoeffs;
+                std::cout << "Camera calibrated correctly" << std::endl;
+                fs.release();                
+        }else {
+                std::cerr << "File \"" + filename + "\" does not exist " << std::endl;
+                exit(1);
+        }
 }
