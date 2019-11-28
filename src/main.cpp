@@ -34,11 +34,11 @@ int main(int argc, char **argv) {
 
         Mat camera_frame, camera_frame_res;
         Mat camera_frame_gray, camera_frame_bw;
-        Mat camera_frame_canny, output_frame;
+        Mat camera_frame_canny, output_frame, camera_frame_blur;
 
         namedWindow(CAMERA_WIN, WINDOW_AUTOSIZE);
 
-        int slider_scale = 60;
+        int slider_scale = 100;
         int slider_thresh = 120;
         int slider_ratio = 20;
         int slider_hough = 80;
@@ -67,8 +67,6 @@ int main(int argc, char **argv) {
                 };
                 frame_counter++;
                 
-                // TODO: Preprocess the camera frame.
-                // 
                 // Convert the image to gray scale
                 // Reduce the size of the frame to reduce processing time
                 //
@@ -77,61 +75,88 @@ int main(int argc, char **argv) {
                 // Process the data from the Aruco
                 // 
                 // Output the detected Aruco into the frame
+
+                // We reduce the size of the frame to ease processing
                 resize(camera_frame, camera_frame_res, Size(),
                         (float)slider_scale / 100, (float)slider_scale / 100);
 
                 cvtColor(camera_frame_res, camera_frame_gray, CV_BGR2GRAY);
 
-                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 7, 0);
+                //
+                // Preprocess
+                //
 
-                output_frame = camera_frame_bw;
-                   
-                int erosion_size = 3;
-                Mat kernel = getStructuringElement(MORPH_RECT,
-                        Size( 2*erosion_size + 1, 2*erosion_size+1 ),
-                        Point( erosion_size, erosion_size ) );
+                // GaussianBlur(camera_frame_gray, camera_frame_blur, Size(5, 5), -100);
+
+                // threshold(camera_frame_gray, camera_frame_bw, slider_thresh, 255, THRESH_BINARY);
+                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 7, 7);
                 
-                Mat img_detected;
-                Mat labels;
-                Mat stats;
-                Mat centroids;
-                
-                connectedComponentsWithStats(output_frame, labels, stats, centroids);
+                output_frame = camera_frame_res;
 
-                std::cout << labels.size() << " " << stats.size() << " " << centroids.size() << std::endl;
+                std::vector<std::vector<Point> > contours;
+                std::vector<Vec4i> hierarchy;
+                findContours(camera_frame_bw, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
 
+                // Mat labels;
+                // Mat stats;
+                // Mat centroids;                
+                // connectedComponentsWithStats(output_frame, labels, stats, centroids);
+
+                // std::cout << labels.size() << " " << stats.size() << " " << centroids.size() << std::endl;
                 RNG rng;
 
-                // Convertimos la imagen a color para poder dibujar
-                cvtColor(output_frame, output_frame, CV_GRAY2BGR);
+                // Convert the image to color to draw onto it
+                // cvtColor(output_frame, output_frame, CV_GRAY2BGR);
 
-                for(int i = 1; i < centroids.rows; ++i) {
+                for( size_t i = 0; i < contours.size(); i++ )
+                {
+                        double arc_len = arcLength(contours[i], true);
+                        double area = contourArea(contours[i]);
+                        if (area < 500) continue;
                         
-                        int area = stats.at<int>(i, CC_STAT_AREA);
+                        std::vector<Point> aruco;
+                        approxPolyDP(contours[i], aruco, 0.005 * arc_len, true);
 
-                        // TODO: Mejorar el threshold de figuras detectadas
-                        if (area < 5000 || area > 40000) continue;
-
-                        int width = stats.at<int>(i, CC_STAT_WIDTH);
-                        int height = stats.at<int>(i, CC_STAT_HEIGHT);
+                        if (aruco.size() != 4) continue;
+                        if (hierarchy[i][2] == -1 && hierarchy[i][3] == -1) continue;
                         
-                        std::cout << "Area: " << area << std::endl;
-                        
-                        // Center point of the rectangle
-                        Point c_p(centroids.at<double>(i, 0), centroids.at<double>(i, 1));
-                        std::cout << c_p << std::endl;
+                        // Scalar color = Scalar( rng.uniform(0, 256), rng.uniform(0,256), rng.uniform(0,256) );
+                        // std::cout << aruco << std::endl;
+                        drawContours(output_frame, contours, (int)i, Scalar(0, 255, 0), 2, LINE_8, hierarchy, 0 );
 
-                        // Upper left point
-                        Point v_p1(stats.at<int>(i, CC_STAT_LEFT), stats.at<int>(i, CC_STAT_TOP));
+                        circle(output_frame, aruco[0], 4, Scalar(0, 0, 255), -1);
+                        circle(output_frame, aruco[1], 4, Scalar(0, 0, 255), -1);
+                        circle(output_frame, aruco[2], 4, Scalar(0, 0, 255), -1);
+                        circle(output_frame, aruco[3], 4, Scalar(0, 0, 255), -1);
 
-                        // Bottom right point
-                        Point v_p2(stats.at<int>(i, CC_STAT_LEFT) + width,
-                                stats.at<int>(i, CC_STAT_TOP) + height);
-                        
-                        drawMarker(output_frame, c_p, Scalar(0, 255, 0));
-                        // circle(camera_frame_res, c_p, 3, Scalar(0, 0, 255), -1);
-                        rectangle(output_frame, v_p1, v_p2, Scalar(0, 255, 0));
                 }
+                
+                // for(int i = 1; i < centroids.rows; ++i) {
+                        
+                //         int area = stats.at<int>(i, CC_STAT_AREA);
+
+                //         // TODO: Mejorar el threshold de figuras detectadas
+                //         if (area < 5000 || area > 40000) continue;
+
+                //         int width = stats.at<int>(i, CC_STAT_WIDTH);
+                //         int height = stats.at<int>(i, CC_STAT_HEIGHT);
+                        
+                //         std::cout << "Area: " << area << std::endl;
+                        
+                //         // Center point of the rectangle
+                //         Point center_p(centroids.at<double>(i, 0), centroids.at<double>(i, 1));
+
+                //         // Upper left point
+                //         Point upper_p(stats.at<int>(i, CC_STAT_LEFT), stats.at<int>(i, CC_STAT_TOP));
+
+                //         // Bottom right point
+                //         Point bottom_p(stats.at<int>(i, CC_STAT_LEFT) + width,
+                //                 stats.at<int>(i, CC_STAT_TOP) + height);
+                        
+                //         drawMarker(output_frame, center_p, Scalar(0, 255, 0));
+                //         // circle(camera_frame_res, c_p, 3, Scalar(0, 0, 255), -1);
+                //         rectangle(output_frame, upper_p, bottom_p, Scalar(0, 255, 0));
+                // }
 
                 // Calculate the fps to check if the algorithm works in real time
                 if(frame_counter == NUM_FRAMES) {
@@ -139,7 +164,6 @@ int main(int argc, char **argv) {
                         fps = NUM_FRAMES / std::difftime(end_t, start_t);
                         frame_counter = 0;
                 };
-
 
                 putText(camera_frame_res, "FPS: " + std::to_string(fps),
                         cvPoint(15, 40), FONT_HERSHEY_SIMPLEX,
