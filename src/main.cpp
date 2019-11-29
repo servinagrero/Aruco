@@ -10,6 +10,7 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
 
 #include "aruco.hpp"
 
@@ -24,6 +25,8 @@ using namespace std;
 void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs);
 void detect_arucos(Mat &frame, vector<Aruco> &arucos);
 void draw_arucos(Mat &frame, vector<Aruco> &arucos);
+void read_marker_dictionary(Mat &aruco_img, Mat &aruco_output);
+
 
 int main(int argc, char **argv) {
 
@@ -44,6 +47,17 @@ int main(int argc, char **argv) {
         Mat camera_frame_gray, camera_frame_bw;
         Mat camera_frame_canny, output_frame, camera_frame_blur;
 
+        // Image used to warp perspective and read the aruco dictionary
+        Mat aruco_img(600, 600, CV_8UC3, Scalar(0, 0, 0));
+        Mat aruco_output(600, 600, CV_8UC3, Scalar(0, 0, 0));
+
+        // Points used to create a flat image of the aruco
+        vector<Point2f> pts_dst;
+        pts_dst.push_back(Point2f(0,     0));
+        pts_dst.push_back(Point2f(599,   0));
+        pts_dst.push_back(Point2f(599, 599));
+        pts_dst.push_back(Point2f(0,   599));
+        
         namedWindow(CAMERA_WIN, WINDOW_AUTOSIZE);
 
         int slider_scale = 100;
@@ -71,12 +85,12 @@ int main(int argc, char **argv) {
                 };
                 frame_counter++;
                 
-                // Convert the image to gray scale
-                // Reduce the size of the frame to reduce processing time
+                // Convert the camera frame to gray scale
                 //
-                // Scan of shapes and detect the Arucos
+                // Threshold the image to dectect the contours
                 //
-                // Process the data from the Aruco
+                // From all contours detected, discard the ones that are not Aruco markers
+                // Extract information about the aruco marker
                 // 
                 // Output the detected Aruco into the frame
 
@@ -85,22 +99,31 @@ int main(int argc, char **argv) {
                         (float)slider_scale / 100, (float)slider_scale / 100);
 
                 cvtColor(camera_frame_res, camera_frame_gray, CV_BGR2GRAY);
-
+                
                 //
                 // Preprocess
                 //
                 adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 7, 7);
-                
+
+                //
+                // Aruco detection
+                //
                 vector<Aruco> arucos;
                 output_frame = camera_frame_res;
                 
                 detect_arucos(camera_frame_bw, arucos);
 
-                RNG rng;
-                
-                // Convert the image to color to draw onto it
-                // cvtColor(output_frame, output_frame, CV_GRAY2BGR);
+                if(arucos.size() > 0) {        
+                        Mat h = findHomography(arucos[0].vertex, pts_dst);
+                        warpPerspective(camera_frame_res, aruco_img, h, aruco_img.size());
+                        read_marker_dictionary(aruco_img, aruco_output);
+                }
 
+                imshow("Aruco image", aruco_output);
+
+                //
+                // Draw the arucos
+                // 
                 draw_arucos(output_frame, arucos);
                 
                 // Calculate the fps to check if the algorithm works in real time
@@ -130,7 +153,8 @@ int main(int argc, char **argv) {
         destroyAllWindows();
 }
 
-// Calibrate the camera
+// Read the xml file containing the camera matrix and the distortion coefficients
+//
 // See https://docs.opencv.org/2.4/doc/tutorials/calib3d/camera_calibration/camera_calibration.html
 // TODO: Use the data from output_calibration to calibrate the camera.
 void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
@@ -141,24 +165,29 @@ void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
                 fs["Distortion_Coefficients"] >> distCoeffs;
                 cout << "Camera calibrated correctly" << endl;
                 fs.release();                
-        }else {
+        } else {
                 cerr << "File \"" + filename + "\" does not exist " << endl;
                 exit(1);
         }
 }
 
-// Given a camera frame detect the aruco markes
-// Give only the border of the aruco
+// Given a camera frame detect the aruco markes on it
+//
+// From all of the contours of the image discard the ones that are no arucos
+// For this we assume the following:
+//   Arucos are rectangular or square shaped
+//   Arucos are of small
+//   Arucos have at least one child contour
 void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
         vector<vector<Point> > contours;
         vector<Vec4i> hierarchy;
 
-        // hierarchy tiene tantos elementos como contornos
-        // hierarchy[i][0] es el indice del contorno siguiente al mismo nivel
-        // hierarchy[i][1] es el indice del contorno previo al mismo nivel
-        // hierarchy[i][2] es el indice del contorno hijo
-        // hierarchy[i][3] se el indice del contorno padre
-        // Si un indice es -1 es que no existe
+        // hierarchy has as many elements as contours there are
+        // hierarchy[i][0] is the index of the next contour at the same level
+        // hierarchy[i][1] is the index of the previous contour at the same level
+        // hierarchy[i][2] is the index of the children contour
+        // hierarchy[i][3] is the index of the parent contour
+        // If one index is -1 then that element does not exist
         findContours(frame, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
 
         for(size_t c = 0; c < contours.size(); ++c) {
@@ -169,10 +198,10 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
 
                 vector<Point> possible_marker;
                 approxPolyDP(contours[c], possible_marker, 0.005 * perimeter, true);
-
-                if(possible_marker.size() != 4) continue;
-                if(hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
                 
+                if(possible_marker.size() != 4) continue;
+                if (hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
+               
                 // TODO: Identify aruco dict
                 Aruco marker;
                 marker.shape = Shape::Cube;
@@ -181,12 +210,14 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
                 Moments m = moments(contours[c], true);
                 marker.center = Point(m.m10 / m.m00, m.m01 / m.m00);
                 
-                std::cout << "Marcador: " << possible_marker << endl;
-                
                 arucos.push_back(marker);
         }
 }
 
+// Given a vector or Aruco markers draw them on the frame
+//
+// Draw the ID of the marker at its center, the border of the
+// marker and its shape above it
 void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
         
         if(arucos.size() == 0) return;
@@ -201,5 +232,34 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 }
 
                 // Draw figure
+        }
+}
+
+// Given a flat image containing an aruco extract the data of the marker
+//
+// We only need to read 16 (4x4) bits of information.
+// However this is sensitive to rotation
+void read_marker_dictionary(Mat &aruco_img, Mat &aruco_output) {
+        
+        // FIXME: Improve segmetation of the marker
+        threshold(aruco_img, aruco_output, 200, 255, THRESH_BINARY);
+
+        Point point;
+        // TODO: Read the 16 values
+        for(int c = 1; c < 7; ++c) {
+                for(int r = 1; r < 7; ++r) {
+                        point.x = 100 * (r-1) + 50;
+                        point.y = 100 * (c-1) + 50;
+                        circle(aruco_output, point, 3, Scalar(0, 0, 255), -1);
+                }
+        }
+
+        // Draw lines to mark each bit
+        // For debug purposes only
+        for(int c = 1; c < 6; ++c) {
+                // Vertical
+                line(aruco_output, Point(100*c, 0), Point(100*c, 599), Scalar(0, 255, 0), 2);
+                // Horizontal
+                line(aruco_output, Point(0, 100*c), Point(599, 100*c), Scalar(0, 255, 0), 2);                        
         }
 }
