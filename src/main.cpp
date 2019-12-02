@@ -2,6 +2,8 @@
 #include <time.h>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <iterator>
 
 #include <opencv2/core/persistence.hpp>
 #include <opencv2/core/types.hpp>
@@ -25,7 +27,8 @@ using namespace std;
 void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs);
 void detect_arucos(Mat &frame, vector<Aruco> &arucos);
 void draw_arucos(Mat &frame, vector<Aruco> &arucos);
-void read_marker_dictionary(Mat &aruco_img, Mat &aruco_output);
+char read_marker_dictionary(Mat &aruco_img);
+bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t rigth_m[4][4]);
 
 
 int main(int argc, char **argv) {
@@ -49,14 +52,15 @@ int main(int argc, char **argv) {
 
         // Image used to warp perspective and read the aruco dictionary
         Mat aruco_img(600, 600, CV_8UC3, Scalar(0, 0, 0));
-        Mat aruco_output(600, 600, CV_8UC3, Scalar(0, 0, 0));
+        Mat aruco_output(600, 600, CV_8UC1, Scalar(0, 0, 0));
 
         // Points used to create a flat image of the aruco
         vector<Point2f> pts_dst;
-        pts_dst.push_back(Point2f(0,     0));
+
         pts_dst.push_back(Point2f(599,   0));
-        pts_dst.push_back(Point2f(599, 599));
+        pts_dst.push_back(Point2f(0,     0));
         pts_dst.push_back(Point2f(0,   599));
+        pts_dst.push_back(Point2f(599, 599));
         
         namedWindow(CAMERA_WIN, WINDOW_AUTOSIZE);
 
@@ -113,13 +117,11 @@ int main(int argc, char **argv) {
                 
                 detect_arucos(camera_frame_bw, arucos);
 
-                if(arucos.size() > 0) {        
-                        Mat h = findHomography(arucos[0].vertex, pts_dst);
+                for(auto &aruco: arucos) {                        
+                        Mat h = findHomography(aruco.vertex, pts_dst);
                         warpPerspective(camera_frame_res, aruco_img, h, aruco_img.size());
-                        read_marker_dictionary(aruco_img, aruco_output);
+                        aruco.id = read_marker_dictionary(aruco_img);
                 }
-
-                imshow("Aruco image", aruco_output);
 
                 //
                 // Draw the arucos
@@ -198,18 +200,21 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
 
                 vector<Point> possible_marker;
                 approxPolyDP(contours[c], possible_marker, 0.005 * perimeter, true);
-                
-                if(possible_marker.size() != 4) continue;
+
+                // Discard shapes
+                if (possible_marker.size() != 4) continue;
                 if (hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
-               
-                // TODO: Identify aruco dict
+
                 Aruco marker;
+                Mat aruco_output;
+                
                 marker.shape = Shape::Cube;
                 marker.vertex = possible_marker;
-
+                
                 Moments m = moments(contours[c], true);
                 marker.center = Point(m.m10 / m.m00, m.m01 / m.m00);
-                
+
+                // Push only markers that have been correctly identified
                 arucos.push_back(marker);
         }
 }
@@ -223,43 +228,80 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
         if(arucos.size() == 0) return;
 
         for(auto aruco: arucos) {
-                // Draw center  and vertex point
-                circle(frame, aruco.center, 3, Scalar(0, 0, 255), -1);
+                if (aruco.id == -1) continue;
 
+                // Draw the first border vertex
+                Point start_vertex = aruco.vertex[aruco.id % 4];
+                circle(frame, start_vertex, 8, Scalar(0, 0, 255), 2);
+                
+                // Draw id at the center of the marker
+                putText(frame, "id=" + to_string(aruco.id),
+                        aruco.center, FONT_HERSHEY_SIMPLEX,
+                        0.7, cvScalar(255, 255, 0), 1, CV_AA);
+
+                // Draw the border of the marker
                 for(size_t side = 0; side < aruco.vertex.size(); ++side) {
                         line(frame, aruco.vertex[side], aruco.vertex[(side + 1) % 4],
                                 Scalar(0, 255, 0), 2);
                 }
 
-                // Draw figure
+                // Draw the figure of the given marker
+                aruco.shape = ARUCO_LUT.at(aruco.id);
+                cout << aruco.shape << endl;
         }
 }
 
 // Given a flat image containing an aruco extract the data of the marker
 //
-// We only need to read 16 (4x4) bits of information.
-// However this is sensitive to rotation
-void read_marker_dictionary(Mat &aruco_img, Mat &aruco_output) {
-        
-        // FIXME: Improve segmetation of the marker
-        threshold(aruco_img, aruco_output, 200, 255, THRESH_BINARY);
+// Return the id of the aruco if it is found
+// Return -1 otherwise
+char read_marker_dictionary(Mat &aruco_img) {
 
-        Point point;
-        // TODO: Read the 16 values
-        for(int c = 1; c < 7; ++c) {
-                for(int r = 1; r < 7; ++r) {
-                        point.x = 100 * (r-1) + 50;
-                        point.y = 100 * (c-1) + 50;
-                        circle(aruco_output, point, 3, Scalar(0, 0, 255), -1);
+        Mat aruco_temp;
+        Mat aruco_output;
+        
+        // Convert to grayscale
+        if (aruco_img.channels() > 1)
+                cvtColor(aruco_img, aruco_img, CV_BGR2GRAY);
+
+        // Use Otsu to approximate the threshold level
+        double thresh = threshold(aruco_img, aruco_temp,
+                180, 255, THRESH_BINARY | THRESH_OTSU);
+        threshold(aruco_temp, aruco_output,
+                thresh, 255, THRESH_BINARY);
+
+        // With just 6x6 pixels we have more than enough information
+        resize(aruco_output, aruco_output, Size(6, 6));
+
+        uint8_t dict_temp[4][4];
+        
+        for(int c = 0; c < 4; ++c) {
+                for(int r = 0; r < 4; ++r) {
+                        dict_temp[c][r] = aruco_output.at<uint8_t>(c+1, r+1);
                 }
         }
 
-        // Draw lines to mark each bit
-        // For debug purposes only
-        for(int c = 1; c < 6; ++c) {
-                // Vertical
-                line(aruco_output, Point(100*c, 0), Point(100*c, 599), Scalar(0, 255, 0), 2);
-                // Horizontal
-                line(aruco_output, Point(0, 100*c), Point(599, 100*c), Scalar(0, 255, 0), 2);                        
+        for(int m = 0; m < NUM_DICTS; ++m) {
+                                
+                if(!compare_matrixes(dict_temp, ARUCO_DICTS[m])) continue;
+                else return m; // Marker has been found
         }
+
+        return -1; // No id found
+}
+
+
+// Compares the squares matrix of the given size
+//
+// Returns true if the two matrix are equal
+// Returns false otherwise
+bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t right_m[4][4]) {
+       
+        for(int col = 0; col < 4; ++col) {
+                for(int row = 0; row < 4; ++row) {
+                        if(left_m[col][row] != right_m[col][row])
+                                return false;
+                }
+        }
+        return true;
 }
