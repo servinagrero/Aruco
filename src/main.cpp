@@ -7,6 +7,7 @@
 
 #include <opencv2/core/persistence.hpp>
 #include <opencv2/core/types.hpp>
+#include <opencv2/core/utility.hpp>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -41,15 +42,39 @@ Mat rvec, tvec;
 
 int main(int argc, char **argv) {
 
-        // TODO: Handle video input
-        String fname = (argc == 2) ? argv[1] : "output_calibration.xml";
+        const String keys =
+        "{help h usage ? |          | Print this message      }"
+        "{input          |<none>    | Video input file        }"
+        "{c              |<none>    | Camera calibration file }"
+        "{out            |output.avi| Output video file }";
         
-        calibrate_camera(fname, camMatrix, distCoeffs);
-        
-        VideoCapture stream0 = cv::VideoCapture(0);
+        CommandLineParser cmdParser(argc, argv, keys);
 
+        if (cmdParser.has("help"))
+        {
+                cmdParser.printMessage();
+                return 0;
+        }
+
+        String fname = cmdParser.get<String>("c");
+        calibrate_camera(fname, camMatrix, distCoeffs);
+
+        String input_stream = cmdParser.get<String>("input");
+        VideoCapture stream0;
+
+        if(input_stream == "")
+                        stream0 = cv::VideoCapture(0);
+        else
+                        stream0 = cv::VideoCapture("input");
+
+        String output_file = cmdParser.get<String>("out");
+
+        VideoWriter video_output(output_file, CV_FOURCC('M','J','P','G'), 10,
+                Size(stream0.get(CV_CAP_PROP_FRAME_WIDTH), stream0.get(CV_CAP_PROP_FRAME_HEIGHT)));
+        cout << "Writing result to video file: " << output_file << endl;
+        
         if (!stream0.isOpened()){
-                cout << "Cannot open camera" << endl;
+                cout << "Cannot open stream" << endl;
                 return -1;
         }
 
@@ -103,7 +128,7 @@ int main(int argc, char **argv) {
                 //
                 // Preprocess
                 //
-                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 15, 7);
+                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 21, 7);
 
                 //
                 // Aruco detection
@@ -135,7 +160,8 @@ int main(int argc, char **argv) {
                         1, cvScalar(0, 0, 255), 1, CV_AA);
 
                 imshow(CAMERA_WIN, camera_frame);
-
+                video_output.write(camera_frame);
+                
                 // Handle key events
                 char key_pressed = waitKey(1);
                 switch(key_pressed) {

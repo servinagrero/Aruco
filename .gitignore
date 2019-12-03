@@ -5,3 +5,4 @@ Aruco
 util/calibration/calibration
 Makefile
 compile_commands.json
+*.avi
