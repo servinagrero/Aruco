@@ -48,7 +48,7 @@ ostream& operator<<(ostream& os, const Shape& shape) {
 // The Arucos are 6x6 so we have a total of 36 bits
 // However, there are only 16 (4x4) bits of useful information
 const unsigned char ARUCO_DICTS[NUM_DICTS][4][4] = {
-        // Marker 1 [aruco_images/4x4_1000-1.png]
+        // Marker 1 [aruco_images NUM_DICT/4x4_1000-1.png]
         {{0  , 0  , 0  , 0  },
          {255, 255, 255, 255},
          {255, 0  , 0  , 255},
@@ -292,9 +292,12 @@ const map<int, Shape> ARUCO_LUT = {
 //   A shape to draw above it
 struct Aruco {
         char id;
-        vector<Point> vertex;
+        vector<Point2f> vertex;
+        Point2f first_vertex;
         Point center;
         Shape shape;
+
+        void draw(Mat &frame);
 };
 
 #endif

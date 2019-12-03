@@ -30,11 +30,18 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos);
 char read_marker_dictionary(Mat &aruco_img);
 bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t rigth_m[4][4]);
 
+template<class V>
+void draw_square(Mat &frame, const vector<V> &v, Scalar color=Scalar(0, 255, 255), int thickness=2);
+
+// Camera matrix and distortion coefficients
+Mat camMatrix, distCoeffs;
+// Rotation and translation matrixes
+Mat rvec, tvec;
+
 
 int main(int argc, char **argv) {
 
-        Mat camMatrix, distCoeffs;
-        vector<Point> rvecs, tvecs;
+        // TODO: Handle video input
         String fname = (argc == 2) ? argv[1] : "output_calibration.xml";
         
         calibrate_camera(fname, camMatrix, distCoeffs);
@@ -46,40 +53,33 @@ int main(int argc, char **argv) {
                 return -1;
         }
 
-        Mat camera_frame, camera_frame_res;
+        Mat camera_frame, output_frame;
         Mat camera_frame_gray, camera_frame_bw;
-        Mat camera_frame_canny, output_frame, camera_frame_blur;
-
+        
         // Image used to warp perspective and read the aruco dictionary
-        Mat aruco_img(600, 600, CV_8UC3, Scalar(0, 0, 0));
-        Mat aruco_output(600, 600, CV_8UC1, Scalar(0, 0, 0));
-
-        // Points used to create a flat image of the aruco
-        vector<Point2f> pts_dst;
-
-        pts_dst.push_back(Point2f(599,   0));
-        pts_dst.push_back(Point2f(0,     0));
-        pts_dst.push_back(Point2f(0,   599));
-        pts_dst.push_back(Point2f(599, 599));
+        Mat aruco_flat_img(600, 600, CV_8UC3, Scalar(0, 0, 0));
         
         namedWindow(CAMERA_WIN, WINDOW_AUTOSIZE);
-
-        int slider_scale = 100;
-        createTrackbar("Reduce scale", CAMERA_WIN, &slider_scale, 100);
-
+        
         time_t start_t, end_t;
         int fps = 30;
         int frame_counter = 0;
 
         bool running = true;
-        
+
+        vector<Point2f> aruco_flat_vertex;
+
+        aruco_flat_vertex.push_back(Point2f(599,   0));
+        aruco_flat_vertex.push_back(Point2f(0,     0));
+        aruco_flat_vertex.push_back(Point2f(0,   599));
+        aruco_flat_vertex.push_back(Point2f(599, 599));
+                                
         while(running) {
                 
                 if (!stream0.read(camera_frame)) {
                         cout << "Failed to read camera frame" << endl;
                         return -1;
                 }
-
                 flip(camera_frame, camera_frame, 1);
                 
                 // Estimation of the camera fps
@@ -97,36 +97,31 @@ int main(int argc, char **argv) {
                 // Extract information about the aruco marker
                 // 
                 // Output the detected Aruco into the frame
-
-                // We reduce the size of the frame to ease processing
-                resize(camera_frame, camera_frame_res, Size(),
-                        (float)slider_scale / 100, (float)slider_scale / 100);
-
-                cvtColor(camera_frame_res, camera_frame_gray, CV_BGR2GRAY);
+                
+                cvtColor(camera_frame, camera_frame_gray, CV_BGR2GRAY);
                 
                 //
                 // Preprocess
                 //
-                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 7, 7);
+                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 15, 7);
 
                 //
                 // Aruco detection
                 //
                 vector<Aruco> arucos;
-                output_frame = camera_frame_res;
                 
                 detect_arucos(camera_frame_bw, arucos);
 
                 for(auto &aruco: arucos) {                        
-                        Mat h = findHomography(aruco.vertex, pts_dst);
-                        warpPerspective(camera_frame_res, aruco_img, h, aruco_img.size());
-                        aruco.id = read_marker_dictionary(aruco_img);
+                        Mat h = findHomography(aruco.vertex, aruco_flat_vertex);
+                        warpPerspective(camera_frame, aruco_flat_img, h, aruco_flat_img.size());
+                        aruco.id = read_marker_dictionary(aruco_flat_img);
                 }
 
                 //
                 // Draw the arucos
-                // 
-                draw_arucos(output_frame, arucos);
+                //
+                draw_arucos(camera_frame, arucos);
                 
                 // Calculate the fps to check if the algorithm works in real time
                 if(frame_counter == NUM_FRAMES) {
@@ -135,11 +130,11 @@ int main(int argc, char **argv) {
                         frame_counter = 0;
                 };
 
-                putText(output_frame, "FPS: " + to_string(fps),
+                putText(camera_frame, "FPS: " + to_string(fps),
                         cvPoint(15, 40), FONT_HERSHEY_SIMPLEX,
                         1, cvScalar(0, 0, 255), 1, CV_AA);
 
-                imshow(CAMERA_WIN, output_frame);
+                imshow(CAMERA_WIN, camera_frame);
 
                 // Handle key events
                 char key_pressed = waitKey(1);
@@ -163,6 +158,12 @@ void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
         FileStorage fs(filename, FileStorage::READ);
         
         if(fs.isOpened()) {
+                // TODO: Fix camera calibration
+                
+                // Point2d center = Point2d(1280/2, 720/2);
+                // camMatrix = (Mat_<double>(3,3) << 1280, 0, center.x, 0 , 1280, center.y, 0, 0, 1);
+                // distCoeffs = Mat::zeros(4,1,cv::DataType<double>::type); // Assuming no lens distortion
+
                 fs["Camera_Matrix"] >> camMatrix;
                 fs["Distortion_Coefficients"] >> distCoeffs;
                 cout << "Camera calibrated correctly" << endl;
@@ -181,6 +182,7 @@ void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
 //   Arucos are of small
 //   Arucos have at least one child contour
 void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
+        
         vector<vector<Point> > contours;
         vector<Vec4i> hierarchy;
 
@@ -197,22 +199,23 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
                 double area = contourArea(contours[c]);
 
                 if (area < 500) continue;
-
                 vector<Point> possible_marker;
                 approxPolyDP(contours[c], possible_marker, 0.005 * perimeter, true);
 
                 // Discard shapes
                 if (possible_marker.size() != 4) continue;
-                if (hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
-
-                Aruco marker;
-                Mat aruco_output;
                 
-                marker.shape = Shape::Cube;
-                marker.vertex = possible_marker;
+                if (hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
+                
+                Aruco marker;
+                
+                Mat aruco_output;
+                for(auto v : possible_marker) {
+                        marker.vertex.push_back(Point2f(v));
+                }
                 
                 Moments m = moments(contours[c], true);
-                marker.center = Point(m.m10 / m.m00, m.m01 / m.m00);
+                marker.center = Point2f(double(m.m10 / m.m00), double(m.m01 / m.m00));
 
                 // Push only markers that have been correctly identified
                 arucos.push_back(marker);
@@ -231,8 +234,8 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 if (aruco.id == -1) continue;
 
                 // Draw the first border vertex
-                Point start_vertex = aruco.vertex[aruco.id % 4];
-                circle(frame, start_vertex, 8, Scalar(0, 0, 255), 2);
+                aruco.first_vertex = aruco.vertex[aruco.id % 4];
+                circle(frame, aruco.first_vertex, 8, Scalar(0, 0, 255), 2);
                 
                 // Draw id at the center of the marker
                 putText(frame, "id=" + to_string(aruco.id),
@@ -240,14 +243,110 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                         0.7, cvScalar(255, 255, 0), 1, CV_AA);
 
                 // Draw the border of the marker
-                for(size_t side = 0; side < aruco.vertex.size(); ++side) {
-                        line(frame, aruco.vertex[side], aruco.vertex[(side + 1) % 4],
-                                Scalar(0, 255, 0), 2);
-                }
+                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
 
                 // Draw the figure of the given marker
                 aruco.shape = ARUCO_LUT.at(aruco.id);
-                cout << aruco.shape << endl;
+
+                // Projection of the 3d cube points into the camera frame
+                vector<Point2d> cube_output_points;
+                vector<Point2d> pyramid_output_points;
+
+                // 3d coordinates of the upper face of the cube
+                vector<Point3d> cube_3d;
+                cube_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
+                cube_3d.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, -250));
+                cube_3d.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, -250));
+                cube_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
+                
+                // cubo_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
+
+                // 3d coordinates of the lower face of the cube
+                vector<Point3d> cube_points_plain;
+                cube_points_plain.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, 0));
+                cube_points_plain.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, 0));
+                cube_points_plain.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, 0));
+                cube_points_plain.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, 0));
+
+
+
+                
+                // 3d coordinates of the upper face of the cube
+                vector<Point3d> pyramid_inv_3d;
+                pyramid_inv_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
+                pyramid_inv_3d.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, -250));
+                pyramid_inv_3d.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, -250));
+                pyramid_inv_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
+                
+                // cubo_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
+
+                // 3d coordinates of the lower face of the cube
+                vector<Point3d> pyramid_inv_plain;
+                pyramid_inv_plain.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, 0));
+                pyramid_inv_plain.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, 0));
+                pyramid_inv_plain.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, 0));
+                pyramid_inv_plain.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, 0));
+
+
+
+                
+                // // 3d coordinates of the upper face of the side pyramid
+                vector<Point3d> pyramid_side_3d;
+                pyramid_side_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
+                pyramid_side_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
+                pyramid_side_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
+
+
+
+                
+                // 3d coordinates of the upper face of the pyramid
+                // TODO: Calculate the correct point
+                vector<Point3d> pyramid_3d;
+                pyramid_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -260));
+
+                switch(aruco.shape) {
+                        case Shape::Prism_5:
+
+                        case Shape::Pyramid_side:
+                        case Shape::Pyramid:
+
+                                solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
+                                projectPoints(pyramid_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_output_points);
+                                
+                                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
+
+                                for(size_t l = 0; l < aruco.vertex.size(); ++l) {
+                                        line(frame, aruco.vertex[l], pyramid_output_points[0], Scalar(0, 255, 255), 2);
+                                }
+                                break;
+                                
+                        case Shape::Pyramid_inv:
+
+                                solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
+                                projectPoints(cube_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_output_points);
+                                
+                                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
+
+                                for(size_t l = 0; l < aruco.vertex.size(); ++l) {
+                                        line(frame, aruco.vertex[l], pyramid_output_points[0], Scalar(0, 255, 255), 2);
+                                }
+                                break;
+                                
+                        case Shape::Cube:
+                                
+                                solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
+                                projectPoints(cube_3d, rvec, tvec, camMatrix, distCoeffs, cube_output_points);
+                                
+                                draw_square(frame, cube_output_points);
+                                
+                                for(size_t l = 0; l < cube_output_points.size(); ++l) {
+                                        line(frame, aruco.vertex[l], cube_output_points[l], Scalar(0, 255, 255), 2);
+                                }
+                                break;
+                                
+                        default:
+                                break;
+                }
         }
 }
 
@@ -282,7 +381,6 @@ char read_marker_dictionary(Mat &aruco_img) {
         }
 
         for(int m = 0; m < NUM_DICTS; ++m) {
-                                
                 if(!compare_matrixes(dict_temp, ARUCO_DICTS[m])) continue;
                 else return m; // Marker has been found
         }
@@ -296,7 +394,6 @@ char read_marker_dictionary(Mat &aruco_img) {
 // Returns true if the two matrix are equal
 // Returns false otherwise
 bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t right_m[4][4]) {
-       
         for(int col = 0; col < 4; ++col) {
                 for(int row = 0; row < 4; ++row) {
                         if(left_m[col][row] != right_m[col][row])
@@ -304,4 +401,14 @@ bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t right_m[4][4]) {
                 }
         }
         return true;
+}
+
+// Given 4 vertex, draw a square with them
+template<class V>
+void draw_square(Mat &frame, const vector<V> &v, Scalar color, int thickness) {
+        if (v.size() != 4) return;
+
+        for(size_t l = 0; l < v.size(); ++l) {
+                line(frame, v[l], v[(l + 1) %4], color, thickness);
+        }
 }
