@@ -251,6 +251,8 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 // Projection of the 3d cube points into the camera frame
                 vector<Point2d> cube_output_points;
                 vector<Point2d> pyramid_output_points;
+                vector<Point2d> pyramid_inv_output_points;
+                vector<Point2d> pyramid_side_output_points;
 
                 // 3d coordinates of the upper face of the cube
                 vector<Point3d> cube_3d;
@@ -259,8 +261,6 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 cube_3d.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, -250));
                 cube_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
                 
-                // cubo_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
-
                 // 3d coordinates of the lower face of the cube
                 vector<Point3d> cube_points_plain;
                 cube_points_plain.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, 0));
@@ -277,16 +277,7 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 pyramid_inv_3d.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, -250));
                 pyramid_inv_3d.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, -250));
                 pyramid_inv_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
-                
-                // cubo_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
-
-                // 3d coordinates of the lower face of the cube
-                vector<Point3d> pyramid_inv_plain;
-                pyramid_inv_plain.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, 0));
-                pyramid_inv_plain.push_back(Point3d(aruco.vertex[1].x, aruco.vertex[1].y, 0));
-                pyramid_inv_plain.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, 0));
-                pyramid_inv_plain.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, 0));
-
+                pyramid_inv_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, 0));
 
 
                 
@@ -294,7 +285,7 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 vector<Point3d> pyramid_side_3d;
                 pyramid_side_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
                 pyramid_side_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
-                pyramid_side_3d.push_back(Point3d((aruco.vertex[1].x - aruco.vertex[2].x)/2, (aruco.vertex[1].y - aruco.vertex[2].y)/2, -60));
+                pyramid_side_3d.push_back(Point3d(aruco.vertex[1].x, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -120));
 
 
 
@@ -302,33 +293,53 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 // 3d coordinates of the upper face of the pyramid
                 // TODO: Calculate the correct point
                 vector<Point3d> pyramid_3d;
-                pyramid_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -260));
+                pyramid_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -360));
+
+                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
 
                 switch(aruco.shape) {
                         case Shape::Prism_5:
 
-                        case Shape::Pyramid_side:
+                                
                         case Shape::Pyramid:
-
+                                
                                 solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
                                 projectPoints(pyramid_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_output_points);
                                 
-                                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
-
                                 for(size_t l = 0; l < aruco.vertex.size(); ++l) {
                                         line(frame, aruco.vertex[l], pyramid_output_points[0], Scalar(0, 255, 255), 2);
                                 }
                                 break;
                                 
-                        case Shape::Pyramid_inv:
+                        case Shape::Pyramid_side:
 
                                 solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
-                                projectPoints(cube_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_output_points);
-                                
-                                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
+                                projectPoints(pyramid_side_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_side_output_points);
 
-                                for(size_t l = 0; l < aruco.vertex.size(); ++l) {
-                                        line(frame, aruco.vertex[l], pyramid_output_points[0], Scalar(0, 255, 255), 2);
+                                line(frame, aruco.vertex[0], pyramid_side_output_points[0], Scalar(0, 255, 255), 2);
+                                line(frame, aruco.vertex[3], pyramid_side_output_points[1], Scalar(0, 255, 255), 2);
+                                line(frame, pyramid_side_output_points[0], pyramid_side_output_points[1], Scalar(0, 255, 255), 2);
+
+                                line(frame, aruco.vertex[0], pyramid_side_output_points[2], Scalar(0, 255, 255), 2);
+                                line(frame, aruco.vertex[3], pyramid_side_output_points[2], Scalar(0, 255, 255), 2);
+                                line(frame, pyramid_side_output_points[0], pyramid_side_output_points[2], Scalar(0, 255, 255), 2);
+                                line(frame, pyramid_side_output_points[1], pyramid_side_output_points[2], Scalar(0, 255, 255), 2);
+
+                                break;
+                                                                
+                        case Shape::Pyramid_inv:
+                                
+                                solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
+                                projectPoints(pyramid_inv_3d, rvec, tvec, camMatrix, distCoeffs, pyramid_inv_output_points);
+
+                                draw_square(frame, pyramid_inv_output_points);
+
+                                for(size_t l = 0; l < pyramid_inv_output_points.size() - 1; ++l) {
+                                        line(frame, pyramid_inv_output_points[l], pyramid_inv_output_points[(l+1)%4], Scalar(0, 255, 255), 2);
+                                }
+                                
+                                for(size_t l = 0; l < pyramid_inv_output_points.size() - 1; ++l) {
+                                        line(frame, pyramid_inv_output_points[l], pyramid_inv_output_points[4], Scalar(0, 255, 255), 2);
                                 }
                                 break;
                                 
@@ -336,7 +347,7 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                                 
                                 solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
                                 projectPoints(cube_3d, rvec, tvec, camMatrix, distCoeffs, cube_output_points);
-                                
+
                                 draw_square(frame, cube_output_points);
                                 
                                 for(size_t l = 0; l < cube_output_points.size(); ++l) {
