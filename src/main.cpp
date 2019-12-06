@@ -1,13 +1,16 @@
 #include <iostream>
-#include <time.h>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <iterator>
+#include <chrono>
+#include <cstdint>
 
 #include <opencv2/core/persistence.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/core/utility.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -24,21 +27,16 @@
 
 using namespace cv;
 using namespace std;
+using namespace std::chrono;
 
 void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs);
 void detect_arucos(Mat &frame, vector<Aruco> &arucos);
-void draw_arucos(Mat &frame, vector<Aruco> &arucos);
+void draw_arucos(Mat &frame, vector<Aruco> &arucos, Shape current_shape, Mat &camMatrix, Mat &distCoeffs);
 char read_marker_dictionary(Mat &aruco_img);
 bool compare_matrixes(const uint8_t left_m[4][4], const uint8_t rigth_m[4][4]);
 
 template<class V>
 void draw_square(Mat &frame, const vector<V> &v, Scalar color=Scalar(0, 255, 255), int thickness=2);
-
-// Camera matrix and distortion coefficients
-Mat camMatrix, distCoeffs;
-// Rotation and translation matrixes
-Mat rvec, tvec;
-
 
 int main(int argc, char **argv) {
 
@@ -55,7 +53,11 @@ int main(int argc, char **argv) {
                 cmdParser.printMessage();
                 return 0;
         }
-
+        // Current shape to draw. Cube by default
+        Shape current_shape = Shape::Cube;
+        // Camera matrix and distortion coefficients
+        Mat camMatrix, distCoeffs;
+        
         String fname = cmdParser.get<String>("c");
         calibrate_camera(fname, camMatrix, distCoeffs);
 
@@ -63,13 +65,13 @@ int main(int argc, char **argv) {
         VideoCapture stream0;
 
         if(input_stream == "")
-                        stream0 = cv::VideoCapture(0);
+                stream0 = cv::VideoCapture(0);
         else
-                        stream0 = cv::VideoCapture("input");
+                stream0 = cv::VideoCapture(input_stream);
 
         String output_file = cmdParser.get<String>("out");
 
-        VideoWriter video_output(output_file, CV_FOURCC('M','J','P','G'), 10,
+        VideoWriter video_output(output_file, CV_FOURCC('M','J','P','G'), stream0.get(CV_CAP_PROP_FPS),
                 Size(stream0.get(CV_CAP_PROP_FRAME_WIDTH), stream0.get(CV_CAP_PROP_FRAME_HEIGHT)));
         cout << "Writing result to video file: " << output_file << endl;
         
@@ -85,9 +87,9 @@ int main(int argc, char **argv) {
         Mat aruco_flat_img(600, 600, CV_8UC3, Scalar(0, 0, 0));
         
         namedWindow(CAMERA_WIN, WINDOW_AUTOSIZE);
-        
-        time_t start_t, end_t;
-        int fps = 30;
+
+        high_resolution_clock::time_point start_t, end_t;
+        float fps = 30.0;
         int frame_counter = 0;
 
         bool running = true;
@@ -105,12 +107,13 @@ int main(int argc, char **argv) {
                         cout << "Failed to read camera frame" << endl;
                         return -1;
                 }
-                flip(camera_frame, camera_frame, 1);
+                if(input_stream == "")
+                        flip(camera_frame, camera_frame, 1);
                 
                 // Estimation of the camera fps
                 // If working with a video file we can use stream.get(CV_CAP_PROP_FPS)
                 if(frame_counter == 0) {
-                        time(&start_t);
+                        start_t = high_resolution_clock::now();
                 };
                 frame_counter++;
                 
@@ -124,11 +127,12 @@ int main(int argc, char **argv) {
                 // Output the detected Aruco into the frame
                 
                 cvtColor(camera_frame, camera_frame_gray, CV_BGR2GRAY);
-                
+
                 //
                 // Preprocess
                 //
-                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 21, 7);
+                adaptiveThreshold(camera_frame_gray, camera_frame_bw, 255,
+                        ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 21, 7);
 
                 //
                 // Aruco detection
@@ -146,19 +150,25 @@ int main(int argc, char **argv) {
                 //
                 // Draw the arucos
                 //
-                draw_arucos(camera_frame, arucos);
+                draw_arucos(camera_frame, arucos, current_shape, camMatrix, distCoeffs);
                 
                 // Calculate the fps to check if the algorithm works in real time
                 if(frame_counter == NUM_FRAMES) {
-                        time(&end_t);
-                        fps = NUM_FRAMES / difftime(end_t, start_t);
+                        end_t = high_resolution_clock::now();
+                        duration<double, std::milli> time_span = end_t - start_t;
+                        fps = NUM_FRAMES * 1000 / (time_span.count());
                         frame_counter = 0;
                 };
 
                 putText(camera_frame, "FPS: " + to_string(fps),
                         cvPoint(15, 40), FONT_HERSHEY_SIMPLEX,
-                        1, cvScalar(0, 0, 255), 1, CV_AA);
+                        0.8, cvScalar(0, 0, 255), 1, CV_AA);
 
+                putText(camera_frame, "Shape: " + to_string(current_shape),
+                        cvPoint(10, camera_frame.rows - 10),
+                        FONT_HERSHEY_SIMPLEX,
+                        0.6, cvScalar(0, 0, 255), 1, CV_AA);
+                
                 imshow(CAMERA_WIN, camera_frame);
                 video_output.write(camera_frame);
                 
@@ -169,6 +179,8 @@ int main(int argc, char **argv) {
                         case 'q':
                                 running = false;
                                 break;
+                        case 'a':
+                                ++current_shape;
                 }
                 
         }
@@ -176,24 +188,31 @@ int main(int argc, char **argv) {
         destroyAllWindows();
 }
 
-// Read the xml file containing the camera matrix and the distortion coefficients
+// Read the text file containing the camera matrix and the distortion coefficients
 //
+// The first line of the file are the 9 values of the camera matrix.
+// The second line are the 5 distortion coefficients
 // See https://docs.opencv.org/2.4/doc/tutorials/calib3d/camera_calibration/camera_calibration.html
-// TODO: Use the data from output_calibration to calibrate the camera.
 void calibrate_camera(String filename, Mat &camMatrix, Mat &distCoeffs) {
-        FileStorage fs(filename, FileStorage::READ);
-        
-        if(fs.isOpened()) {
-                // TODO: Fix camera calibration
-                
-                // Point2d center = Point2d(1280/2, 720/2);
-                // camMatrix = (Mat_<double>(3,3) << 1280, 0, center.x, 0 , 1280, center.y, 0, 0, 1);
-                // distCoeffs = Mat::zeros(4,1,cv::DataType<double>::type); // Assuming no lens distortion
+        ifstream fs(filename);
 
-                fs["Camera_Matrix"] >> camMatrix;
-                fs["Distortion_Coefficients"] >> distCoeffs;
+        if(fs.is_open()) {
+                double camData[9], distData[5];
+                
+                for(int e = 0; e < 9; ++e) fs >> camData[e];
+                for(int e = 0; e < 5; ++e) fs >> distData[e];
+
+                Mat camMatrixTemp(3, 3, DataType<double>::type, camData);
+                Mat distCoeffsTemp(5, 1, cv::DataType<double>::type, distData);
+
+                camMatrixTemp.copyTo(camMatrix);
+                distCoeffsTemp.copyTo(distCoeffs);
+                
+                cout << camMatrix << endl;
+                cout << distCoeffs << endl;
                 cout << "Camera calibrated correctly" << endl;
-                fs.release();                
+
+                fs.close();
         } else {
                 cerr << "File \"" + filename + "\" does not exist " << endl;
                 exit(1);
@@ -230,12 +249,10 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
 
                 // Discard shapes
                 if (possible_marker.size() != 4) continue;
-                
                 if (hierarchy[c][2] != -1 && hierarchy[c][3] == -1) continue;
                 
                 Aruco marker;
-                
-                Mat aruco_output;
+
                 for(auto v : possible_marker) {
                         marker.vertex.push_back(Point2f(v));
                 }
@@ -252,13 +269,16 @@ void detect_arucos(Mat &frame, vector<Aruco > &arucos) {
 //
 // Draw the ID of the marker at its center, the border of the
 // marker and its shape above it
-void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
+void draw_arucos(Mat &frame, vector<Aruco> &arucos, Shape current_shape, Mat &camMatrix, Mat &distCoeffs) {
         
         if(arucos.size() == 0) return;
 
         for(auto aruco: arucos) {
                 if (aruco.id == -1) continue;
 
+                // Rotation and translation matrixes
+                Mat rvec, tvec;
+        
                 // Draw the first border vertex
                 aruco.first_vertex = aruco.vertex[aruco.id % 4];
                 circle(frame, aruco.first_vertex, 8, Scalar(0, 0, 255), 2);
@@ -266,13 +286,14 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 // Draw id at the center of the marker
                 putText(frame, "id=" + to_string(aruco.id),
                         aruco.center, FONT_HERSHEY_SIMPLEX,
-                        0.7, cvScalar(255, 255, 0), 1, CV_AA);
+                        0.7, cvScalar(0, 0, 255), 1, CV_AA);
 
                 // Draw the border of the marker
                 draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
 
                 // Draw the figure of the given marker
-                aruco.shape = ARUCO_LUT.at(aruco.id);
+                // aruco.shape = ARUCO_LUT.at(aruco.id);
+                aruco.shape = current_shape;
 
                 // Projection of the 3d cube points into the camera frame
                 vector<Point2d> cube_output_points;
@@ -280,6 +301,9 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 vector<Point2d> pyramid_inv_output_points;
                 vector<Point2d> pyramid_side_output_points;
 
+                //
+                // Cube data
+                // 
                 // 3d coordinates of the upper face of the cube
                 vector<Point3d> cube_3d;
                 cube_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
@@ -294,9 +318,9 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 cube_points_plain.push_back(Point3d(aruco.vertex[2].x, aruco.vertex[2].y, 0));
                 cube_points_plain.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, 0));
 
-
-
-                
+                //
+                // Inverted pyramid data
+                // 
                 // 3d coordinates of the upper face of the cube
                 vector<Point3d> pyramid_inv_3d;
                 pyramid_inv_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
@@ -305,28 +329,25 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                 pyramid_inv_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
                 pyramid_inv_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, 0));
 
-
-                
+                //
+                // Pyramid on its side data
+                //
                 // // 3d coordinates of the upper face of the side pyramid
                 vector<Point3d> pyramid_side_3d;
                 pyramid_side_3d.push_back(Point3d(aruco.vertex[0].x, aruco.vertex[0].y, -250));
                 pyramid_side_3d.push_back(Point3d(aruco.vertex[3].x, aruco.vertex[3].y, -250));
-                pyramid_side_3d.push_back(Point3d(aruco.vertex[1].x, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -120));
+                pyramid_side_3d.push_back(Point3d(aruco.vertex[1].x, (aruco.vertex[1].y + aruco.vertex[2].y)/2, -120));
 
-
-
-                
+                //
+                // Pyramid data
+                //
                 // 3d coordinates of the upper face of the pyramid
                 // TODO: Calculate the correct point
                 vector<Point3d> pyramid_3d;
                 pyramid_3d.push_back(Point3d((aruco.vertex[0].x + aruco.vertex[2].x)/2, (aruco.vertex[1].y + aruco.vertex[3].y)/2, -360));
 
-                draw_square(frame, aruco.vertex, Scalar(0, 255, 0));
-
                 switch(aruco.shape) {
                         case Shape::Prism_5:
-
-                                
                         case Shape::Pyramid:
                                 
                                 solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
@@ -374,8 +395,10 @@ void draw_arucos(Mat &frame, vector<Aruco> &arucos) {
                                 solvePnP(cube_points_plain, aruco.vertex, camMatrix, distCoeffs, rvec, tvec);
                                 projectPoints(cube_3d, rvec, tvec, camMatrix, distCoeffs, cube_output_points);
 
+                                // Draw the upper border
                                 draw_square(frame, cube_output_points);
-                                
+
+                                // Draw vertical lines
                                 for(size_t l = 0; l < cube_output_points.size(); ++l) {
                                         line(frame, aruco.vertex[l], cube_output_points[l], Scalar(0, 255, 255), 2);
                                 }
@@ -403,6 +426,7 @@ char read_marker_dictionary(Mat &aruco_img) {
         // Use Otsu to approximate the threshold level
         double thresh = threshold(aruco_img, aruco_temp,
                 180, 255, THRESH_BINARY | THRESH_OTSU);
+        
         threshold(aruco_temp, aruco_output,
                 thresh, 255, THRESH_BINARY);
 

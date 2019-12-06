@@ -54,7 +54,7 @@
 
   \vspace*{1cm}
   \noindent {\fontsize{14}{10}\selectfont 100363683 David Ruiz Barajas}\\
-  \noindent {\fontsize{14}{10}\selectfont 100363693 Sergio Vinagrero Gutierrez}\\
+  \noindent {\fontsize{14}{10}\selectfont 100363693 Sergio Vinagrero Gutiérrez}\\
 
   \vspace*{2cm}
   \noindent\includegraphics[width=.5\textwidth]{/home/vinagrero/Templates/UC3M/template/logo_completo_horizontal.png}
@@ -76,7 +76,7 @@ En esta memoria se detalla el proceso seguido para realizar el proyecto de detec
   \begin{center}
     \includegraphics[width=0.25\textwidth]{../util/aruco_images/4x4_1000-0.png}
   \end{center}
-  \vspace*{-2em}  
+  \vspace*{-1em}  
   \caption{Marcador}
   \label{fig:marker}
 \end{wrapfigure}
@@ -165,8 +165,11 @@ Es necesario tener en cuenta que incluso con las condiciones establecidas hasta 
 
 % Imagen plana del marcador
 \subsection{Extracción del marcador}
-Para facilitar la extracción de los datos del marcador, se procede ahora a obtener una imagen plana de dicho marcador.
+Para facilitar la extracción de los datos del marcador, se procede ahora a obtener una imagen plana de dicho marcador. Para ello utilizaremos dos planos homograficos: el plano formado por los 4 vértices del marcador en la primera imagen obtenida por la cámara y un plano creado como si se estuviese viendo el marcador de frente.\\
 
+Este proceso se realiza sobre la primera imagen obtenida por la cámara ya que, como se ha explicado anteriormente, la imagen binarizada contiene demasiado ruido.\\
+
+Para cada imagen frontal del aruco, se segmenta la imagen utilizando Otsu. Como la imagen frontal del marcador se obtiene de la imagen original, hay que segmentar la imagen. Otsu nos permite encontrar el punto ideal para segmentar cada marcador, ya que como se ha indicado anteriormente, debido a cambios de iluminacion en el entorno y posiciones de los marcadores, cada aruco tendrá un punto de segmentación distinto.
 
 % Identificación del marcador
 \subsection{Identificación del marcador}
@@ -182,7 +185,8 @@ Una vez extraidos los 16 valores, se procede a la comparación de esta matriz co
   El valor 255 corresponde a un bit blanco y el 0 a uno negro. Se crean 4 matrices, una para cada angulo de rotacion del marcador y se guardan en sentido horario. Esto será muy util a la hora de dibujar el primer vértice del marcador, lo cual se detallará más adelante.\\
   Para este proyecto se han utilizado 10 marcadores aruco, por lo que la lista de diccionarios contiene 40 matrices.\\
 
-  Se ha escogido este método de guardar la información de cada marcador dado que utiliza pocos recursos en memoría (40 matrices $\times$ 16 valores $\times$ 1 byte/número = \textbf{640 bytes})
+  Se ha escogido este método de guardar la información de cada marcador dado que utiliza pocos recursos en memoría (40 matrices $\times$ 16 valores $\times$ 1 byte/número = \textbf{640 bytes}) y se evitar tener que rotar una matriz 4 veces por iteración, lo que incrementaría la complejidad del programa.
+  
 \end{minipage}%
 \hfill
 \begin{minipage}{0.35\textwidth}
@@ -212,10 +216,40 @@ Una vez extraidos los 16 valores, se procede a la comparación de esta matriz co
 \end{center}
 \end{minipage}
 
+\vspace*{1em}
+
+Cuando la matriz calcula previamente coindice con una de la lista generada, el marcador se identifica con el íncide de la matriz en la lista de diccionarios. En el caso de que el marcador detectado no coincida con ningún diccionario de la lista se le asigna el id -1. Este es el ultimo de los sesgos realizados a la imagen para que finalmente solo se consiga dibujar los marcadores.\\
+
+No obstante, este método requiere conecimiento a priori de los marcadores a detectar, por lo que no se pueden añadir marcadores nuevos durante la ejecucion del programa.
 
 % Calculo de puntos 3D
-\subsection{Calculo de puntos 3D}
+\subsection{Cálculo de puntos 3D}
+Esta es la última etapa del proceso. Aquí dibujaremos todos aquellos marcadores cuyo id sea distinto de -1. De esta manera solo dibujaremos en la pantalla arucos reales.\\
 
+Junto a la lista de diccionarios predefinidos, se ha creado un mapa de valores que relaciona el id del marcador con una figura en 3D para dibujar. Actualmente, el código permite el dibujo de un cubo, una pirámide, una pirámide invertida y una pirámide apoyada en un lado. Añadir figuras nuevas al sistema seria tan facil como asignarles un aruco, buscar los puntos 3D de dicha figura y poner el código para conectar los vértices de dicha figura.\\
+
+Para este paso necesitaremos lo siguiente:
+\begin{itemize}
+\item Matriz de la cámara y de los coeficientes de distorsión.
+\item Puntos 2D del marcador en la imagen.
+\item Puntos 3D de la cara inferior del marcador.
+\item Puntos 3D del objeto a proyectar en la imagen.
+  \end{itemize}
+
+  Con estos datos, OpenCV encuentra la matriz de rotación y de traslación para proyectar los puntos 3D de la cara inferior del marcador en 2D en la imagen de la cámara. De esta manera, tenemos una manera de trasladar, o proyectar, puntos en 3D en la imagen de la cámara.
+
+  \subsection{Obtención de fps}
+
+  Una vez el programa funciona correctamente, es necesario comprobar la velocidad a la que funciona, dado que existe el requerimiento de ejecución en tiempo real.\\
+
+Si leemos las imagenes de un video, podemos acceder a los metadatos de este y ver los frames a los que se reproduce dicho video. Los metadatos de los fps se acceden mediante el atributo \textit{CV\_CAP\_PROP\_FPS}. Sin embargo, esto solo nos permite conocer la velocidad a la que reproduce el video, pero no la velocidad a la que se procesa.\\
+  
+Para solventar este problema se ha creado un contador básico mediante el uso de dos variables. Se calcula el tiempo que hay de diferencia entre ambas una vez se hayan analizado un numero determinado de frames. Se ha escogido 30 frames como éste número, ya que la mayoría de las webcams no graban a más de 30 fps.
+  
+ % TODO: Añadir imagenes de las figuras dibujadas
 \section{Resumen}
+
+Como se puede ver, a lo largo de este proyecto se han utilizado la mayoría de técnicas de procesamiento de imágenes vistas en clase.
+También se ha podido ver de primera mano la importancia de un buen preprocesamiento de la imagen, ya que son los cimientos sobre los que se realizarán las siguientes etapas.
 
 \end{document}
